@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sports Court Booking</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="page">
+      <header class="hero">
+        <div class="hero__content">
+          <p class="eyebrow">Court Reservations</p>
+          <h1>Book pickleball, tennis, or basketball</h1>
+        </div>
+        <div class="hero__card">
+          <div class="card__label">Saved Bookings</div>
+          <div class="card__time" id="booking-count">0</div>
+          <div class="card__meta" id="save-status"> </div>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section class="panel">
+          <div class="panel__header">
+            <div>
+              <h2>Booking Form</h2>
+            </div>
+          </div>
+
+          <form id="booking-form" class="form">
+            <div class="row">
+              <label for="name">
+                Name
+                <input type="text" id="name" placeholder="Your name" required />
+              </label>
+              <label for="email">
+                Email
+                <input type="email" id="email" placeholder="you@email.com" required />
+              </label>
+            </div>
+
+            <div class="row">
+              <label for="date">
+                Date
+                <input type="date" id="date" required />
+              </label>
+              <label for="start-time">
+                Start Time
+                <input type="time" id="start-time" required />
+              </label>
+              <label for="end-time">
+                Finish Time
+                <input type="time" id="end-time" required />
+              </label>
+              <label for="sport">
+                Sport
+                <select id="sport" required>
+                  <option value="" disabled selected>Select a sport</option>
+                  <option value="pickleball">Pickleball</option>
+                  <option value="tennis">Tennis</option>
+                  <option value="basketball">Basketball</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="actions">
+              <button type="submit">Book Court</button>
+            </div>
+          </form>
+        </section>
+
+        <section class="panel">
+          <div class="calendar-header">
+            <div>
+              <h2>Booking Calendar</h2>
+            </div>
+            <div class="calendar-controls">
+              <button type="button" id="prev-month" class="ghost">Previous</button>
+              <div class="calendar-month" id="calendar-month"></div>
+              <button type="button" id="next-month" class="ghost">Next</button>
+            </div>
+          </div>
+
+          <div class="calendar-weekdays" id="calendar-weekdays"></div>
+          <div class="calendar-grid" id="calendar-grid"></div>
+        </section>
+      </main>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
