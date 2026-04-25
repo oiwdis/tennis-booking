@@ -160,17 +160,6 @@ function clearRescheduleMode() {
   window.history.replaceState({}, "", url);
 }
 
-async function deleteBooking(bookingId) {
-  const response = await fetch(`${API_URL}/${encodeURIComponent(bookingId)}`, {
-    method: "DELETE",
-  });
-
-  if (!response.ok) {
-    const payload = await response.json().catch(() => ({}));
-    throw new Error(payload.error || "Unable to delete the booking.");
-  }
-}
-
 function buildWeekdays() {
   calendarWeekdays.innerHTML = "";
 
@@ -232,25 +221,12 @@ function renderCalendar(bookings) {
         bookingEl.className = `calendar-booking ${booking.sport}`;
         const details = bookingDetails(booking);
         bookingEl.dataset.tooltip = details;
-        bookingEl.dataset.bookingId = booking.id;
+        bookingEl.setAttribute("title", details);
+        bookingEl.setAttribute("tabindex", "0");
         bookingEl.innerHTML = `
-          <div class="calendar-booking__top">
-            <div class="calendar-booking__summary">
-              <strong>${sportLabel(booking.sport)}</strong>
-              <span class="calendar-booking-time">${formatTimeRange(startTime, endTime)}</span>
-            </div>
-            <button
-              type="button"
-              class="calendar-booking-delete"
-              data-booking-id="${escapeHtml(booking.id)}"
-              data-booking-name="${escapeHtml(booking.name)}"
-              data-booking-sport="${escapeHtml(sportLabel(booking.sport))}"
-              data-booking-date="${escapeHtml(booking.date)}"
-              data-booking-range="${escapeHtml(formatTimeRange(startTime, endTime))}"
-              aria-label="Delete ${escapeHtml(booking.name)}'s ${escapeHtml(booking.sport)} booking"
-            >
-              <span aria-hidden="true">🗑︎</span>
-            </button>
+          <div class="calendar-booking__summary">
+            <strong>${sportLabel(booking.sport)}</strong>
+            <span class="calendar-booking-time">${formatTimeRange(startTime, endTime)}</span>
           </div>
           <span class="calendar-booking-name">${escapeHtml(booking.name)}</span>
         `;
@@ -388,42 +364,6 @@ bookingForm.addEventListener("submit", async (event) => {
     await refreshBookings();
   } catch {
     setHint("We couldn't save your booking right now. Please try again in a moment.", true);
-  }
-});
-
-calendarGrid.addEventListener("click", async (event) => {
-  const deleteButton = event.target.closest(".calendar-booking-delete");
-
-  if (!deleteButton) {
-    return;
-  }
-
-  const { bookingId } = deleteButton.dataset;
-
-  if (!bookingId) {
-    return;
-  }
-
-  const confirmationMessage = [
-    "Delete this booking?",
-    "",
-    `${deleteButton.dataset.bookingSport} for ${deleteButton.dataset.bookingName}`,
-    `${deleteButton.dataset.bookingDate} from ${deleteButton.dataset.bookingRange}`,
-  ].join("\n");
-
-  if (!window.confirm(confirmationMessage)) {
-    return;
-  }
-
-  deleteButton.disabled = true;
-
-  try {
-    await deleteBooking(bookingId);
-    setHint("Booking deleted from the shared calendar.");
-    await refreshBookings();
-  } catch (error) {
-    setHint(error.message, true);
-    deleteButton.disabled = false;
   }
 });
 
