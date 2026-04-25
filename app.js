@@ -291,11 +291,11 @@ async function refreshBookings(options = {}) {
       const openedAsFile = window.location.protocol === "file:";
       const message = openedAsFile
         ? `Open this app from ${SERVER_URL}, not as a file, so shared bookings can load and save.`
-        : `${error.message} Start the server with: node server.js, then open ${SERVER_URL}.`;
+        : "We couldn't connect to the booking service right now. Please try again in a moment.";
       setHint(message, true);
     }
 
-    saveStatus.textContent = "Booking server offline. Start node server.js and open localhost:3000.";
+    saveStatus.textContent = "Booking service is temporarily unavailable.";
   }
 }
 
@@ -386,7 +386,7 @@ bookingForm.addEventListener("submit", async (event) => {
     }
     await refreshBookings();
   } catch {
-    setHint(`Unable to reach the booking server. Start it with: node server.js, then open ${SERVER_URL}.`, true);
+    setHint("We couldn't save your booking right now. Please try again in a moment.", true);
   }
 });
 
@@ -398,3 +398,87 @@ calendarGrid.addEventListener("click", async (event) => {
   }
 
   const { bookingId } = deleteButton.dataset;
+
+  if (!bookingId) {
+    return;
+  }
+
+  const confirmationMessage = [
+    "Delete this booking?",
+    "",
+    `${deleteButton.dataset.bookingSport} for ${deleteButton.dataset.bookingName}`,
+    `${deleteButton.dataset.bookingDate} from ${deleteButton.dataset.bookingRange}`,
+  ].join("\n");
+
+  if (!window.confirm(confirmationMessage)) {
+    return;
+  }
+
+  deleteButton.disabled = true;
+
+  try {
+    await deleteBooking(bookingId);
+    setHint("Booking deleted from the shared calendar.");
+    await refreshBookings();
+  } catch (error) {
+    setHint(error.message, true);
+    deleteButton.disabled = false;
+  }
+});
+
+prevMonthButton.addEventListener("click", () => {
+  currentMonth = new Date(currentMonth.getFullYear(), currentMonth.getMonth() - 1, 1);
+  render();
+});
+
+nextMonthButton.addEventListener("click", () => {
+  currentMonth = new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 1);
+  render();
+});
+
+async function init() {
+  const url = new URL(window.location.href);
+  rescheduleToken = url.searchParams.get("reschedule") || "";
+  const today = formatDateKey(new Date());
+  dateInput.value = today;
+  startTimeInput.value = "09:00";
+  endTimeInput.value = "10:00";
+  buildWeekdays();
+  render();
+  setHint(`Bookings are saved on the server and shared across browsers at ${SERVER_URL}.`);
+
+  if (rescheduleToken) {
+    try {
+      const managedBooking = await loadManagedBooking(rescheduleToken);
+      nameInput.value = managedBooking.name || "";
+      emailInput.value = managedBooking.email || "";
+      dateInput.value = managedBooking.date || today;
+      startTimeInput.value = managedBooking.startTime || "09:00";
+      endTimeInput.value = managedBooking.endTime || "10:00";
+      sportInput.value = managedBooking.sport || "";
+      currentMonth = startOfMonth(new Date(`${managedBooking.date}T12:00:00`));
+      setHint("You are rescheduling an existing booking. Update the form and click Book Court.");
+    } catch (error) {
+      clearRescheduleMode();
+      setHint(error.message, true);
+    }
+  }
+
+  await refreshBookings({ showError: true });
+
+  window.setInterval(() => {
+    refreshBookings();
+  }, REFRESH_INTERVAL_MS);
+
+  window.addEventListener("focus", () => {
+    refreshBookings();
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) {
+      refreshBookings();
+    }
+  });
+}
+
+init();

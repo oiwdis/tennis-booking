@@ -16,6 +16,7 @@ const RESEND_API_KEY = process.env.RESEND_API_KEY || "";
 const EMAIL_FROM = process.env.EMAIL_FROM || "";
 const EMAIL_REPLY_TO = process.env.EMAIL_REPLY_TO || "";
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || "";
+const EMAIL_FEATURES_ENABLED = Boolean(RESEND_API_KEY && EMAIL_FROM);
 
 const STORAGE_MODE =
   SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY ? "supabase" : "file";
@@ -266,16 +267,18 @@ async function supabaseRequest(resource, options = {}) {
 }
 
 async function readBookingsFromSupabase() {
+  const selectColumns = EMAIL_FEATURES_ENABLED
+    ? "id,manage_token,name,email,date,start_time,end_time,sport"
+    : "id,name,email,date,start_time,end_time,sport";
   const rows = await supabaseRequest(
-    `${SUPABASE_TABLE}?select=id,manage_token,name,email,date,start_time,end_time,sport&order=date.asc,start_time.asc`
+    `${SUPABASE_TABLE}?select=${selectColumns}&order=date.asc,start_time.asc`
   );
   return Array.isArray(rows) ? rows.map(normalizeStoredBooking) : [];
 }
 
 function toSupabaseRow(booking) {
-  return {
+  const row = {
     id: booking.id,
-    manage_token: booking.manageToken,
     name: booking.name,
     email: booking.email,
     date: booking.date,
@@ -283,6 +286,12 @@ function toSupabaseRow(booking) {
     end_time: booking.endTime,
     sport: booking.sport,
   };
+
+  if (EMAIL_FEATURES_ENABLED) {
+    row.manage_token = booking.manageToken;
+  }
+
+  return row;
 }
 
 async function createBookingInSupabase(booking) {
@@ -299,6 +308,10 @@ async function createBookingInSupabase(booking) {
 }
 
 async function updateBookingInSupabase(booking) {
+  if (!EMAIL_FEATURES_ENABLED) {
+    return null;
+  }
+
   const rows = await supabaseRequest(
     `${SUPABASE_TABLE}?manage_token=eq.${encodeURIComponent(booking.manageToken)}`,
     {
@@ -326,6 +339,10 @@ async function deleteBookingInSupabase(bookingId) {
 }
 
 async function deleteBookingByTokenInSupabase(manageToken) {
+  if (!EMAIL_FEATURES_ENABLED) {
+    return [];
+  }
+
   const rows = await supabaseRequest(
     `${SUPABASE_TABLE}?manage_token=eq.${encodeURIComponent(manageToken)}`,
     {
@@ -404,6 +421,10 @@ async function deleteBookingRecordByToken(manageToken) {
 }
 
 async function findBookingByToken(manageToken) {
+  if (!EMAIL_FEATURES_ENABLED) {
+    return null;
+  }
+
   const bookings = await readBookings();
   return bookings.find((booking) => booking.manageToken === manageToken) || null;
 }
@@ -419,7 +440,7 @@ function getBaseUrl(request) {
 }
 
 async function sendConfirmationEmail(booking, baseUrl) {
-  if (!RESEND_API_KEY || !EMAIL_FROM) {
+  if (!EMAIL_FEATURES_ENABLED) {
     return { sent: false, reason: "Email provider not configured." };
   }
 
@@ -498,3 +519,348 @@ function renderManagePage(title, body) {
         border-radius: 24px;
         padding: 28px;
         box-shadow: 0 22px 50px rgba(39, 24, 15, 0.12);
+      }
+      .button {
+        display: inline-block;
+        padding: 12px 18px;
+        border-radius: 999px;
+        text-decoration: none;
+        border: none;
+        cursor: pointer;
+        background: #d06d39;
+        color: white;
+        font: inherit;
+      }
+      .button.secondary {
+        background: transparent;
+        color: #27180f;
+        border: 1px solid rgba(39, 24, 15, 0.16);
+      }
+      .button.danger {
+        background: #8f2f2f;
+      }
+      .actions {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-top: 18px;
+      }
+      dl {
+        margin: 18px 0 0;
+      }
+      dt {
+        font-weight: 700;
+        margin-top: 10px;
+      }
+      dd {
+        margin: 4px 0 0;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="card">
+        ${body}
+      </div>
+    </main>
+  </body>
+</html>`;
+}
+
+function bookingSummaryHtml(booking) {
+  return `
+    <dl>
+      <dt>Name</dt>
+      <dd>${escapeHtml(booking.name)}</dd>
+      <dt>Email</dt>
+      <dd>${escapeHtml(booking.email)}</dd>
+      <dt>Sport</dt>
+      <dd>${escapeHtml(sportLabel(booking.sport))}</dd>
+      <dt>Date</dt>
+      <dd>${escapeHtml(booking.date)}</dd>
+      <dt>Time</dt>
+      <dd>${escapeHtml(formatTimeRange(booking.startTime, booking.endTime))}</dd>
+    </dl>
+  `;
+}
+
+async function handleManageRoutes(request, response, pathname, url) {
+  if (pathname === "/manage/reschedule") {
+    const token = url.searchParams.get("token") || "";
+    response.writeHead(302, {
+      Location: `/?reschedule=${encodeURIComponent(token)}`,
+    });
+    response.end();
+    return true;
+  }
+
+  if (pathname !== "/manage/cancel") {
+    return false;
+  }
+
+  const token = url.searchParams.get("token") || "";
+  const booking = token ? await findBookingByToken(token) : null;
+
+  if (!booking) {
+    sendHtml(
+      response,
+      404,
+      renderManagePage("Booking Not Found", "<h1>Booking not found</h1><p>This link is no longer valid.</p>")
+    );
+    return true;
+  }
+
+  if (request.method === "GET") {
+    sendHtml(
+      response,
+      200,
+      renderManagePage(
+        "Cancel Booking",
+        `
+          <h1>Cancel this booking?</h1>
+          <p>This will remove the booking from the shared calendar.</p>
+          ${bookingSummaryHtml(booking)}
+          <form method="POST" action="/manage/cancel?token=${encodeURIComponent(token)}" class="actions">
+            <button class="button danger" type="submit">Yes, cancel booking</button>
+            <a class="button secondary" href="/">Keep booking</a>
+          </form>
+        `
+      )
+    );
+    return true;
+  }
+
+  if (request.method === "POST") {
+    const deletedBookings = await deleteBookingRecordByToken(token);
+
+    if (deletedBookings.length === 0) {
+      sendHtml(
+        response,
+        404,
+        renderManagePage("Booking Not Found", "<h1>Booking not found</h1><p>This link is no longer valid.</p>")
+      );
+      return true;
+    }
+
+    sendHtml(
+      response,
+      200,
+      renderManagePage(
+        "Booking Cancelled",
+        `
+          <h1>Booking cancelled</h1>
+          <p>Your reservation has been removed from the calendar.</p>
+          ${bookingSummaryHtml(deletedBookings[0])}
+          <div class="actions">
+            <a class="button" href="/">Book another time</a>
+          </div>
+        `
+      )
+    );
+    return true;
+  }
+
+  sendText(response, 405, "Method not allowed");
+  return true;
+}
+
+async function handleApi(request, response, pathname, url) {
+  if (request.method === "DELETE" && pathname.startsWith("/api/bookings/")) {
+    const bookingId = decodeURIComponent(pathname.slice("/api/bookings/".length));
+    const deleted = await deleteBookingRecord(bookingId);
+
+    if (!deleted) {
+      sendJson(response, 404, { error: "Booking not found." });
+      return;
+    }
+
+    sendJson(response, 200, { success: true });
+    return;
+  }
+
+  if (request.method === "GET" && pathname === "/api/manage-booking") {
+    const token = url.searchParams.get("token") || "";
+    const booking = token ? await findBookingByToken(token) : null;
+
+    if (!booking) {
+      sendJson(response, 404, { error: "Booking not found." });
+      return;
+    }
+
+    sendJson(response, 200, publicBooking(booking));
+    return;
+  }
+
+  if (request.method === "POST" && pathname === "/api/reschedule") {
+    let payload;
+
+    try {
+      const body = await readRequestBody(request);
+      payload = JSON.parse(body || "{}");
+    } catch {
+      sendJson(response, 400, { error: "Invalid JSON body." });
+      return;
+    }
+
+    const token = url.searchParams.get("token") || "";
+    const existingBooking = token ? await findBookingByToken(token) : null;
+
+    if (!existingBooking) {
+      sendJson(response, 404, { error: "Booking not found." });
+      return;
+    }
+
+    const nextBooking = normalizeBooking({
+      ...existingBooking,
+      ...payload,
+      id: existingBooking.id,
+      manageToken: existingBooking.manageToken,
+      email: existingBooking.email,
+    });
+
+    const validationError = validateBooking(nextBooking);
+
+    if (validationError) {
+      sendJson(response, 400, { error: validationError });
+      return;
+    }
+
+    const bookings = await readBookings();
+    const conflict = bookings.find(
+      (entry) =>
+        entry.id !== existingBooking.id &&
+        entry.date === nextBooking.date &&
+        bookingsOverlap(nextBooking.startTime, nextBooking.endTime, entry.startTime, entry.endTime)
+    );
+
+    if (conflict) {
+      sendJson(response, 409, {
+        error: `${conflict.sport} is already booked for ${nextBooking.date} from ${conflict.startTime} to ${conflict.endTime}.`,
+      });
+      return;
+    }
+
+    const updatedBooking = await updateBookingRecordByToken(nextBooking);
+
+    if (!updatedBooking) {
+      sendJson(response, 404, { error: "Booking not found." });
+      return;
+    }
+
+    sendJson(response, 200, publicBooking(updatedBooking));
+    return;
+  }
+
+  if (pathname !== "/api/bookings") {
+    sendJson(response, 404, { error: "Not found" });
+    return;
+  }
+
+  if (request.method === "GET") {
+    const bookings = await readBookings();
+    sendJson(response, 200, bookings.map(publicBooking));
+    return;
+  }
+
+  if (request.method === "POST") {
+    let payload;
+
+    try {
+      const body = await readRequestBody(request);
+      payload = JSON.parse(body || "{}");
+    } catch {
+      sendJson(response, 400, { error: "Invalid JSON body." });
+      return;
+    }
+
+    const booking = normalizeBooking(payload);
+    const validationError = validateBooking(booking);
+
+    if (validationError) {
+      sendJson(response, 400, { error: validationError });
+      return;
+    }
+
+    const bookings = await readBookings();
+    const conflict = bookings.find(
+      (entry) =>
+        entry.date === booking.date &&
+        bookingsOverlap(booking.startTime, booking.endTime, entry.startTime, entry.endTime)
+    );
+
+    if (conflict) {
+      sendJson(response, 409, {
+        error: `${conflict.sport} is already booked for ${booking.date} from ${conflict.startTime} to ${conflict.endTime}.`,
+      });
+      return;
+    }
+
+    const createdBooking = await createBookingRecord(booking);
+    const baseUrl = getBaseUrl(request);
+    let emailResult = { sent: false };
+
+    try {
+      emailResult = await sendConfirmationEmail(createdBooking, baseUrl);
+    } catch (error) {
+      emailResult = { sent: false, error: error.message };
+    }
+
+    sendJson(response, 201, {
+      booking: publicBooking(createdBooking),
+      emailSent: emailResult.sent,
+      emailError: emailResult.error || "",
+    });
+    return;
+  }
+
+  sendJson(response, 405, { error: "Method not allowed." });
+}
+
+async function serveFile(response, pathname) {
+  const safePath = pathname === "/" ? "/index.html" : pathname;
+  const filePath = path.normalize(path.join(PUBLIC_DIR, safePath));
+
+  if (!filePath.startsWith(PUBLIC_DIR)) {
+    sendText(response, 403, "Forbidden");
+    return;
+  }
+
+  try {
+    const data = await fs.readFile(filePath);
+    const extension = path.extname(filePath).toLowerCase();
+    response.writeHead(200, {
+      "Content-Type": MIME_TYPES[extension] || "application/octet-stream",
+      "Cache-Control": "no-store",
+    });
+    response.end(data);
+  } catch {
+    sendText(response, 404, "Not found");
+  }
+}
+
+const server = http.createServer(async (request, response) => {
+  const url = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
+
+  try {
+    const handledManageRoute = await handleManageRoutes(request, response, url.pathname, url);
+
+    if (handledManageRoute) {
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/")) {
+      await handleApi(request, response, url.pathname, url);
+      return;
+    }
+
+    await serveFile(response, url.pathname);
+  } catch (error) {
+    sendJson(response, 500, { error: "Server error", detail: error.message });
+  }
+});
+
+server.listen(PORT, HOST, () => {
+  console.log(
+    `Sports court booking server running at http://localhost:${PORT} using ${STORAGE_MODE} storage`
+  );
+});
