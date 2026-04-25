@@ -17,10 +17,13 @@ const sportInput = document.getElementById("sport");
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const API_URL = "/api/bookings";
+const MANAGE_BOOKING_API_URL = "/api/manage-booking";
+const RESCHEDULE_API_URL = "/api/reschedule";
 const REFRESH_INTERVAL_MS = 15000;
 const SERVER_URL = "http://localhost:3000";
 let currentMonth = startOfMonth(new Date());
 let bookingsCache = [];
+let rescheduleToken = "";
 
 function startOfMonth(date) {
   return new Date(date.getFullYear(), date.getMonth(), 1);
@@ -35,6 +38,19 @@ async function loadBookings() {
 
   const bookings = await response.json();
   return Array.isArray(bookings) ? bookings : [];
+}
+
+async function loadManagedBooking(token) {
+  const response = await fetch(`${MANAGE_BOOKING_API_URL}?token=${encodeURIComponent(token)}`, {
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || "Unable to load that booking.");
+  }
+
+  return response.json();
 }
 
 function setHint(message, isError = false) {
@@ -134,6 +150,13 @@ function bookingDetails(booking) {
 
 function showOverlapPopup(message) {
   window.alert(message);
+}
+
+function clearRescheduleMode() {
+  rescheduleToken = "";
+  const url = new URL(window.location.href);
+  url.searchParams.delete("reschedule");
+  window.history.replaceState({}, "", url);
 }
 
 async function deleteBooking(bookingId) {
@@ -249,7 +272,9 @@ function render() {
     return getBookingStart(a).localeCompare(getBookingStart(b));
   });
   bookingCount.textContent = String(bookings.length);
-  saveStatus.textContent = `${bookings.length} booking${bookings.length === 1 ? "" : "s"} shared across browsers.`;
+  saveStatus.textContent = rescheduleToken
+    ? "Reschedule mode: update the form and save your new time."
+    : `${bookings.length} booking${bookings.length === 1 ? "" : "s"} shared across browsers.`;
   renderCalendar(bookings);
 }
 
@@ -312,7 +337,10 @@ bookingForm.addEventListener("submit", async (event) => {
   }
 
   try {
-    const response = await fetch(API_URL, {
+    const endpoint = rescheduleToken
+      ? `${RESCHEDULE_API_URL}?token=${encodeURIComponent(rescheduleToken)}`
+      : API_URL;
+    const response = await fetch(endpoint, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -339,13 +367,23 @@ bookingForm.addEventListener("submit", async (event) => {
       return;
     }
 
+    const booking = payload.booking || payload;
     currentMonth = startOfMonth(new Date(`${date}T12:00:00`));
     bookingForm.reset();
-    dateInput.value = date;
-    startTimeInput.value = startTime;
-    endTimeInput.value = endTime;
+    dateInput.value = booking.date || date;
+    startTimeInput.value = booking.startTime || startTime;
+    endTimeInput.value = booking.endTime || endTime;
     sportInput.selectedIndex = 0;
-    setHint("Booking saved. It now appears on the shared calendar below.");
+    if (rescheduleToken) {
+      clearRescheduleMode();
+      setHint("Booking rescheduled successfully.");
+    } else if (payload.emailSent) {
+      setHint("Booking saved and confirmation email sent.");
+    } else if (payload.emailError) {
+      setHint("Booking saved, but the confirmation email could not be sent.", true);
+    } else {
+      setHint("Booking saved. It now appears on the shared calendar below.");
+    }
     await refreshBookings();
   } catch {
     setHint(`Unable to reach the booking server. Start it with: node server.js, then open ${SERVER_URL}.`, true);
@@ -360,67 +398,3 @@ calendarGrid.addEventListener("click", async (event) => {
   }
 
   const { bookingId } = deleteButton.dataset;
-
-  if (!bookingId) {
-    return;
-  }
-
-  const confirmationMessage = [
-    "Delete this booking?",
-    "",
-    `${deleteButton.dataset.bookingSport} for ${deleteButton.dataset.bookingName}`,
-    `${deleteButton.dataset.bookingDate} from ${deleteButton.dataset.bookingRange}`,
-  ].join("\n");
-
-  if (!window.confirm(confirmationMessage)) {
-    return;
-  }
-
-  deleteButton.disabled = true;
-
-  try {
-    await deleteBooking(bookingId);
-    setHint("Booking deleted from the shared calendar.");
-    await refreshBookings();
-  } catch (error) {
-    setHint(error.message, true);
-    deleteButton.disabled = false;
-  }
-});
-
-prevMonthButton.addEventListener("click", () => {
-  currentMonth = new Date(currentMonth.getFullYear(), currentMonth.getMonth() - 1, 1);
-  render();
-});
-
-nextMonthButton.addEventListener("click", () => {
-  currentMonth = new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 1);
-  render();
-});
-
-async function init() {
-  const today = formatDateKey(new Date());
-  dateInput.value = today;
-  startTimeInput.value = "09:00";
-  endTimeInput.value = "10:00";
-  buildWeekdays();
-  render();
-  setHint(`Bookings are saved on the server and shared across browsers at ${SERVER_URL}.`);
-  await refreshBookings({ showError: true });
-
-  window.setInterval(() => {
-    refreshBookings();
-  }, REFRESH_INTERVAL_MS);
-
-  window.addEventListener("focus", () => {
-    refreshBookings();
-  });
-
-  document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) {
-      refreshBookings();
-    }
-  });
-}
-
-init();

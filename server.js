@@ -12,6 +12,11 @@ const DATA_FILE = path.join(DATA_DIR, "bookings.json");
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const SUPABASE_TABLE = process.env.SUPABASE_TABLE || "bookings";
+const RESEND_API_KEY = process.env.RESEND_API_KEY || "";
+const EMAIL_FROM = process.env.EMAIL_FROM || "";
+const EMAIL_REPLY_TO = process.env.EMAIL_REPLY_TO || "";
+const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || "";
+
 const STORAGE_MODE =
   SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY ? "supabase" : "file";
 
@@ -57,6 +62,36 @@ function bookingsOverlap(startA, endA, startB, endB) {
   return startA < endB && endA > startB;
 }
 
+function formatTime(time) {
+  const [hourText = "0", minute = "00"] = time.split(":");
+  const hour = Number(hourText);
+  const suffix = hour >= 12 ? "PM" : "AM";
+  const displayHour = hour % 12 || 12;
+  return `${displayHour}:${minute} ${suffix}`;
+}
+
+function formatTimeRange(startTime, endTime) {
+  return `${formatTime(startTime)} - ${formatTime(endTime)}`;
+}
+
+function sportLabel(sport) {
+  return sport.charAt(0).toUpperCase() + sport.slice(1);
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (character) => {
+    const entities = {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    };
+
+    return entities[character];
+  });
+}
+
 function normalizeStoredBooking(input) {
   const startTime =
     typeof input.startTime === "string" && input.startTime.trim()
@@ -76,8 +111,16 @@ function normalizeStoredBooking(input) {
           ? addOneHour(startTime)
           : "";
 
+  const manageToken =
+    typeof input.manageToken === "string" && input.manageToken.trim()
+      ? input.manageToken.trim()
+      : typeof input.manage_token === "string" && input.manage_token.trim()
+        ? input.manage_token.trim()
+        : randomUUID();
+
   return {
     id: typeof input.id === "string" && input.id.trim() ? input.id.trim() : randomUUID(),
+    manageToken,
     name: typeof input.name === "string" ? input.name.trim() : "",
     email: typeof input.email === "string" ? input.email.trim().toLowerCase() : "",
     date: typeof input.date === "string" ? input.date.trim() : "",
@@ -89,6 +132,18 @@ function normalizeStoredBooking(input) {
 
 function normalizeBooking(input) {
   return normalizeStoredBooking(input);
+}
+
+function publicBooking(booking) {
+  return {
+    id: booking.id,
+    name: booking.name,
+    email: booking.email,
+    date: booking.date,
+    startTime: booking.startTime,
+    endTime: booking.endTime,
+    sport: booking.sport,
+  };
 }
 
 function validateBooking(booking) {
@@ -134,6 +189,14 @@ function sendJson(response, statusCode, payload) {
     "Cache-Control": "no-store",
   });
   response.end(JSON.stringify(payload));
+}
+
+function sendHtml(response, statusCode, html) {
+  response.writeHead(statusCode, {
+    "Content-Type": "text/html; charset=utf-8",
+    "Cache-Control": "no-store",
+  });
+  response.end(html);
 }
 
 function sendText(response, statusCode, message) {
@@ -204,7 +267,7 @@ async function supabaseRequest(resource, options = {}) {
 
 async function readBookingsFromSupabase() {
   const rows = await supabaseRequest(
-    `${SUPABASE_TABLE}?select=id,name,email,date,start_time,end_time,sport&order=date.asc,start_time.asc`
+    `${SUPABASE_TABLE}?select=id,manage_token,name,email,date,start_time,end_time,sport&order=date.asc,start_time.asc`
   );
   return Array.isArray(rows) ? rows.map(normalizeStoredBooking) : [];
 }
@@ -212,6 +275,7 @@ async function readBookingsFromSupabase() {
 function toSupabaseRow(booking) {
   return {
     id: booking.id,
+    manage_token: booking.manageToken,
     name: booking.name,
     email: booking.email,
     date: booking.date,
@@ -234,6 +298,22 @@ async function createBookingInSupabase(booking) {
   return normalizeStoredBooking(rows[0]);
 }
 
+async function updateBookingInSupabase(booking) {
+  const rows = await supabaseRequest(
+    `${SUPABASE_TABLE}?manage_token=eq.${encodeURIComponent(booking.manageToken)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(toSupabaseRow(booking)),
+    }
+  );
+
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return null;
+  }
+
+  return normalizeStoredBooking(rows[0]);
+}
+
 async function deleteBookingInSupabase(bookingId) {
   const rows = await supabaseRequest(
     `${SUPABASE_TABLE}?id=eq.${encodeURIComponent(bookingId)}`,
@@ -243,6 +323,17 @@ async function deleteBookingInSupabase(bookingId) {
   );
 
   return Array.isArray(rows) ? rows.length > 0 : false;
+}
+
+async function deleteBookingByTokenInSupabase(manageToken) {
+  const rows = await supabaseRequest(
+    `${SUPABASE_TABLE}?manage_token=eq.${encodeURIComponent(manageToken)}`,
+    {
+      method: "DELETE",
+    }
+  );
+
+  return Array.isArray(rows) ? rows.map(normalizeStoredBooking) : [];
 }
 
 async function readBookings() {
@@ -258,6 +349,23 @@ async function createBookingRecord(booking) {
 
   const bookings = await readBookingsFromFile();
   bookings.push(booking);
+  await writeBookingsToFile(bookings);
+  return booking;
+}
+
+async function updateBookingRecordByToken(booking) {
+  if (STORAGE_MODE === "supabase") {
+    return updateBookingInSupabase(booking);
+  }
+
+  const bookings = await readBookingsFromFile();
+  const index = bookings.findIndex((entry) => entry.manageToken === booking.manageToken);
+
+  if (index === -1) {
+    return null;
+  }
+
+  bookings[index] = booking;
   await writeBookingsToFile(bookings);
   return booking;
 }
@@ -278,111 +386,115 @@ async function deleteBookingRecord(bookingId) {
   return true;
 }
 
-async function handleApi(request, response, pathname) {
-  if (request.method === "DELETE" && pathname.startsWith("/api/bookings/")) {
-    const bookingId = decodeURIComponent(pathname.slice("/api/bookings/".length));
-    const deleted = await deleteBookingRecord(bookingId);
-
-    if (!deleted) {
-      sendJson(response, 404, { error: "Booking not found." });
-      return;
-    }
-
-    sendJson(response, 200, { success: true });
-    return;
+async function deleteBookingRecordByToken(manageToken) {
+  if (STORAGE_MODE === "supabase") {
+    return deleteBookingByTokenInSupabase(manageToken);
   }
 
-  if (pathname !== "/api/bookings") {
-    sendJson(response, 404, { error: "Not found" });
-    return;
+  const bookings = await readBookingsFromFile();
+  const deleted = bookings.filter((booking) => booking.manageToken === manageToken);
+  const nextBookings = bookings.filter((booking) => booking.manageToken !== manageToken);
+
+  if (deleted.length === 0) {
+    return [];
   }
 
-  if (request.method === "GET") {
-    const bookings = await readBookings();
-    sendJson(response, 200, bookings);
-    return;
-  }
-
-  if (request.method === "POST") {
-    let payload;
-
-    try {
-      const body = await readRequestBody(request);
-      payload = JSON.parse(body || "{}");
-    } catch {
-      sendJson(response, 400, { error: "Invalid JSON body." });
-      return;
-    }
-
-    const booking = normalizeBooking(payload);
-    const validationError = validateBooking(booking);
-
-    if (validationError) {
-      sendJson(response, 400, { error: validationError });
-      return;
-    }
-
-    const bookings = await readBookings();
-    const conflict = bookings.find(
-      (entry) =>
-        entry.date === booking.date &&
-        bookingsOverlap(booking.startTime, booking.endTime, entry.startTime, entry.endTime)
-    );
-
-    if (conflict) {
-      sendJson(response, 409, {
-        error: `${conflict.sport} is already booked for ${booking.date} from ${conflict.startTime} to ${conflict.endTime}.`,
-      });
-      return;
-    }
-
-    const createdBooking = await createBookingRecord(booking);
-    sendJson(response, 201, createdBooking);
-    return;
-  }
-
-  sendJson(response, 405, { error: "Method not allowed." });
+  await writeBookingsToFile(nextBookings);
+  return deleted;
 }
 
-async function serveFile(response, pathname) {
-  const safePath = pathname === "/" ? "/index.html" : pathname;
-  const filePath = path.normalize(path.join(PUBLIC_DIR, safePath));
-
-  if (!filePath.startsWith(PUBLIC_DIR)) {
-    sendText(response, 403, "Forbidden");
-    return;
-  }
-
-  try {
-    const data = await fs.readFile(filePath);
-    const extension = path.extname(filePath).toLowerCase();
-    response.writeHead(200, {
-      "Content-Type": MIME_TYPES[extension] || "application/octet-stream",
-      "Cache-Control": "no-store",
-    });
-    response.end(data);
-  } catch {
-    sendText(response, 404, "Not found");
-  }
+async function findBookingByToken(manageToken) {
+  const bookings = await readBookings();
+  return bookings.find((booking) => booking.manageToken === manageToken) || null;
 }
 
-const server = http.createServer(async (request, response) => {
-  const url = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
-
-  try {
-    if (url.pathname.startsWith("/api/")) {
-      await handleApi(request, response, url.pathname);
-      return;
-    }
-
-    await serveFile(response, url.pathname);
-  } catch (error) {
-    sendJson(response, 500, { error: "Server error", detail: error.message });
+function getBaseUrl(request) {
+  if (PUBLIC_BASE_URL) {
+    return PUBLIC_BASE_URL.replace(/\/$/, "");
   }
-});
 
-server.listen(PORT, HOST, () => {
-  console.log(
-    `Sports court booking server running at http://localhost:${PORT} using ${STORAGE_MODE} storage`
-  );
-});
+  const host = request.headers.host || `localhost:${PORT}`;
+  const protocol = request.headers["x-forwarded-proto"] || "http";
+  return `${protocol}://${host}`;
+}
+
+async function sendConfirmationEmail(booking, baseUrl) {
+  if (!RESEND_API_KEY || !EMAIL_FROM) {
+    return { sent: false, reason: "Email provider not configured." };
+  }
+
+  const cancelUrl = `${baseUrl}/manage/cancel?token=${encodeURIComponent(booking.manageToken)}`;
+  const rescheduleUrl = `${baseUrl}/manage/reschedule?token=${encodeURIComponent(booking.manageToken)}`;
+  const subject = `${sportLabel(booking.sport)} booking confirmed for ${booking.date}`;
+  const html = `
+    <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1f1a17;">
+      <h2 style="margin-bottom: 12px;">Your court booking is confirmed</h2>
+      <p>Hi ${escapeHtml(booking.name)},</p>
+      <p>Your ${escapeHtml(sportLabel(booking.sport))} court booking is set for <strong>${escapeHtml(
+        booking.date
+      )}</strong> from <strong>${escapeHtml(
+        formatTimeRange(booking.startTime, booking.endTime)
+      )}</strong>.</p>
+      <p>If you need to make a change, use one of these links:</p>
+      <p>
+        <a href="${cancelUrl}" style="display:inline-block;padding:10px 16px;margin-right:8px;background:#8f2f2f;color:#fff;text-decoration:none;border-radius:999px;">Cancel Booking</a>
+        <a href="${rescheduleUrl}" style="display:inline-block;padding:10px 16px;background:#d06d39;color:#fff;text-decoration:none;border-radius:999px;">Reschedule Booking</a>
+      </p>
+      <p>You can also copy these links:</p>
+      <p>Cancel: <a href="${cancelUrl}">${cancelUrl}</a></p>
+      <p>Reschedule: <a href="${rescheduleUrl}">${rescheduleUrl}</a></p>
+    </div>
+  `;
+
+  const payload = {
+    from: EMAIL_FROM,
+    to: [booking.email],
+    subject,
+    html,
+  };
+
+  if (EMAIL_REPLY_TO) {
+    payload.reply_to = EMAIL_REPLY_TO;
+  }
+
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${RESEND_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`Email send failed: ${response.status} ${detail}`);
+  }
+
+  return { sent: true };
+}
+
+function renderManagePage(title, body) {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>${escapeHtml(title)}</title>
+    <style>
+      body {
+        margin: 0;
+        font-family: Arial, sans-serif;
+        background: linear-gradient(180deg, #f8f4ea 0%, #f5efe2 100%);
+        color: #27180f;
+      }
+      main {
+        max-width: 640px;
+        margin: 48px auto;
+        padding: 24px;
+      }
+      .card {
+        background: rgba(255, 253, 248, 0.96);
+        border-radius: 24px;
+        padding: 28px;
+        box-shadow: 0 22px 50px rgba(39, 24, 15, 0.12);
