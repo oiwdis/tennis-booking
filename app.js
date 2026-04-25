@@ -33,7 +33,8 @@ async function loadBookings() {
   const response = await fetch(API_URL, { cache: "no-store" });
 
   if (!response.ok) {
-    throw new Error("Unable to load bookings right now.");
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.detail || payload.error || "Unable to load bookings right now.");
   }
 
   const bookings = await response.json();
@@ -291,7 +292,7 @@ async function refreshBookings(options = {}) {
       const openedAsFile = window.location.protocol === "file:";
       const message = openedAsFile
         ? `Open this app from ${SERVER_URL}, not as a file, so shared bookings can load and save.`
-        : "We couldn't connect to the booking service right now. Please try again in a moment.";
+        : error.message || "We couldn't connect to the booking service right now. Please try again in a moment.";
       setHint(message, true);
     }
 

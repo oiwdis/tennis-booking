@@ -21,6 +21,10 @@ const EMAIL_FEATURES_ENABLED = Boolean(RESEND_API_KEY && EMAIL_FROM);
 const STORAGE_MODE =
   SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY ? "supabase" : "file";
 
+console.log(
+  `Startup config: storage=${STORAGE_MODE}, email=${EMAIL_FEATURES_ENABLED ? "enabled" : "disabled"}, table=${SUPABASE_TABLE}`
+);
+
 const MIME_TYPES = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
@@ -256,6 +260,12 @@ async function supabaseRequest(resource, options = {}) {
 
   if (!response.ok) {
     const detail = await response.text();
+    console.error("Supabase request failed", {
+      resource,
+      method: options.method || "GET",
+      status: response.status,
+      detail,
+    });
     throw new Error(`Supabase request failed: ${response.status} ${detail}`);
   }
 
@@ -855,6 +865,12 @@ const server = http.createServer(async (request, response) => {
 
     await serveFile(response, url.pathname);
   } catch (error) {
+    console.error("Request failed", {
+      method: request.method,
+      pathname: url.pathname,
+      message: error.message,
+      stack: error.stack,
+    });
     sendJson(response, 500, { error: "Server error", detail: error.message });
   }
 });
